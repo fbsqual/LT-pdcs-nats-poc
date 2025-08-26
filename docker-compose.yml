@@ -1,0 +1,140 @@
+version: '3.8'
+
+services:
+  # NATS JetStream 消息总线
+  nats:
+    image: nats:2.10-alpine
+    container_name: lt-nats
+    ports:
+      - "4222:4222"    # NATS client port
+      - "8222:8222"    # HTTP monitoring port
+      - "6222:6222"    # Cluster port
+    command: >
+      --jetstream
+      --store_dir=/data
+      --http_port=8222
+      --max_memory_store=1GB
+      --max_file_store=10GB
+    volumes:
+      - nats_data:/data
+    networks:
+      - lt-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8222/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # MinIO 对象存储 (S3兼容)
+  minio:
+    image: minio/minio:latest
+    container_name: lt-minio
+    ports:
+      - "9000:9000"    # API port
+      - "9001:9001"    # Console port
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - lt-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # DuckDB 数据库服务 (用于开发测试)
+  duckdb:
+    image: postgres:15-alpine  # 临时使用PostgreSQL，后续替换为DuckDB
+    container_name: lt-duckdb
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ltpdcs
+      POSTGRES_USER: ltuser
+      POSTGRES_PASSWORD: ltpass123
+    volumes:
+      - duckdb_data:/var/lib/postgresql/data
+    networks:
+      - lt-network
+    restart: unless-stopped
+
+  # Redis 缓存 (用于会话和临时数据)
+  redis:
+    image: redis:7-alpine
+    container_name: lt-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - lt-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Prometheus 监控
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: lt-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - lt-network
+    restart: unless-stopped
+
+  # Grafana 可视化
+  grafana:
+    image: grafana/grafana:latest
+    container_name: lt-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - lt-network
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+volumes:
+  nats_data:
+    driver: local
+  minio_data:
+    driver: local
+  duckdb_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  lt-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
